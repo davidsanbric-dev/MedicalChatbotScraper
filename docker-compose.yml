@@ -1,0 +1,17 @@
+services:
+  scraper:
+    build: .
+    # Run as the host user so files written into the bind-mounted ./scraped
+    # are owned by you, not root (export UID/GID, or they default to 0).
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    extra_hosts:
+      # Allows the container to reach the Postgres exposed by the
+      # medical_conditions_api stack running on the host
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./scraped:/app/scraped # Fallback storage
+    # Default command shows help - override for specific tasks, e.g.:
+    #   docker compose run scraper uv run python main.py --condition acne
+    command: ["uv", "run", "python", "main.py", "--help"]

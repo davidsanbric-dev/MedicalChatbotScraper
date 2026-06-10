@@ -1,0 +1,31 @@
+# Medical Conditions Scraper Dependencies
+# Web scraping and database persistence
+
+# Web scraping and HTTP requests
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# HTML and XML parsing
+lxml>=4.9.3
+
+# Database dependencies
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+alembic>=1.12.0
+pgvector>=0.2.0
+
+# JSON handling (built-in, but explicit for clarity)
+# json - built into Python
+
+# File system operations (built-in)
+# pathlib - built into Python
+# os - built into Python
+
+# Command line argument parsing (built-in)
+# argparse - built into Python
+
+# Regular expressions (built-in) 
+# re - built into Python
+
+# Time operations (built-in)
+# time - built into Python
