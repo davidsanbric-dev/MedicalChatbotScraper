@@ -152,15 +152,12 @@ def scrape_condition(slug, output_dir="scraped", use_database=False, db_persiste
 
     # Extract relevant sections
     sections = []
-    introduction = ""
-    section_count = 0
-    for section in soup.select("section, div.section"):  
-        section_count += 1
+    for section_count, section in enumerate(soup.select("section, div.section"), 1):
         heading = section.find(["h2", "h3"])
         heading_text = heading.get_text(strip=True) if heading else "General"
 
-        # Skip the first section if it's "General" (repetitive content)
-        if section_count == 1 and heading_text == "General":
+        # Skip the untitled lead sections (page header boilerplate)
+        if section_count <= 2 and heading_text == "General":
             continue
 
         # Skip sections that contain the symptoms card
@@ -175,38 +172,20 @@ def scrape_condition(slug, output_dir="scraped", use_database=False, db_persiste
         paragraphs = [p.get_text(" ", strip=True) for p in section.find_all("p")]
         content = "\n".join(paragraphs).strip()
 
-        # If it's the second section and "General", move to introduction and omit from sections
-        if section_count == 2 and heading_text == "General" and content:
-            introduction = content
-            continue
-
         if content:
             sections.append({
                 "heading": heading_text,
                 "content": content
             })
 
-    # FAQs if they exist
-    faqs = []
-    faq_blocks = soup.select("div.faq, div.faq-item")
-    for faq in faq_blocks:
-        q = faq.find(["h3", "h4"])
-        a = faq.find("p")
-        if q and a:
-            faqs.append({
-                "question": q.get_text(strip=True),
-                "answer": a.get_text(strip=True)
-            })
-
-    # Assemble JSON
+    # Assemble JSON. Text is stored as found on the page (non-breaking spaces
+    # included); the worker normalizes it, so raw_data stays a faithful copy.
     data = {
         "title": title,
         "url": url,
-        "introduction": introduction,
         "symptoms": symptoms,
         "onlineDiagnosingAndTreating": online_diagnosing_treating,
         "sections": sections,
-        "faqs": faqs
     }
 
     # Save data (database or JSON file)
@@ -262,12 +241,12 @@ def scrape_all_conditions(output_dir="scraped", delay=0, use_database=False):
     
     # Get all condition URLs from the sitemap
     sitemap_url = f"{BASE_URL}/sitemap.xml"
-    res = requests.get(sitemap_url)
+    res = requests.get(sitemap_url, timeout=30)
     
     if res.status_code != 200:
         print(f"❌ Error {res.status_code} accessing sitemap. Trying alternative method...")
         # Fallback to original method if sitemap doesn't work
-        res = requests.get(CONDITIONS_URL)
+        res = requests.get(CONDITIONS_URL, timeout=30)
         if res.status_code != 200:
             print("❌ Could not access the conditions index.")
             return
@@ -296,16 +275,29 @@ def scrape_all_conditions(output_dir="scraped", delay=0, use_database=False):
 
     print(f"🔎 Total conditions to process: {len(slugs)}")
 
-    # Scraping of each condition
+    # Scraping of each condition. There is no automatic retry: a failed page is
+    # reported at the end and left for the next run.
+    failed = []
     for i, slug in enumerate(sorted(slugs), 1):
         print(f"📝 Processing condition {i}/{len(slugs)}: {slug}")
         # Pass the shared db_persistence so scrape_condition doesn't reconnect
-        scrape_condition(slug, output_dir, use_database, db_persistence=db_persistence)
+        if scrape_condition(slug, output_dir, use_database, db_persistence=db_persistence) is None:
+            failed.append(slug)
         time.sleep(delay)  # avoid overloading the server
-    
+
     # Close database connection if this function created it
     if db_persistence:
         db_persistence.disconnect()
+
+    if failed:
+        print(f"⚠️ {len(failed)} of {len(slugs)} conditions failed: {', '.join(failed)}")
+        if use_database:
+            print("💡 Re-run to fill the gaps: conditions already in the database are skipped")
+        else:
+            print("💡 Retry each with --condition <slug>, or re-run --all (JSON files are rewritten)")
+    else:
+        print(f"✅ All {len(slugs)} conditions processed")
+    return failed
 
 
 def validate_condition_slug(slug):
@@ -334,12 +326,12 @@ def list_available_conditions():
     
     # Try to get conditions from sitemap
     sitemap_url = f"{BASE_URL}/sitemap.xml"
-    res = requests.get(sitemap_url)
+    res = requests.get(sitemap_url, timeout=30)
     
     if res.status_code != 200:
         print(f"❌ Error {res.status_code} accessing sitemap. Trying fallback method...")
         # Fallback to main conditions page
-        res = requests.get(CONDITIONS_URL)
+        res = requests.get(CONDITIONS_URL, timeout=30)
         if res.status_code != 200:
             print("❌ Could not access conditions index.")
             return set()

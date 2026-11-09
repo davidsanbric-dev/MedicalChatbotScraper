@@ -106,13 +106,12 @@ def main():
             print(f"❌ Failed to scrape condition: {condition_slug}")
             print("💡 Tip: Use --list-conditions to verify the condition name is correct")
             sys.exit(1)
-    elif args.all:
-        print("🔎 Scraping all conditions...")
-        scrape_all_conditions(output_dir, args.delay, args.database)
     else:
-        # Default behavior: scrape all conditions
-        print("🔎 Scraping all conditions (default)...")
-        scrape_all_conditions(output_dir, args.delay, args.database)
+        # --all, or no target at all (default behavior)
+        print("🔎 Scraping all conditions...")
+        failed = scrape_all_conditions(output_dir, args.delay, args.database)
+        if failed is None or failed:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

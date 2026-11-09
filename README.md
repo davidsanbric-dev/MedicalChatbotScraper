@@ -34,7 +34,7 @@ medical_conditions_scraper/
 - 🔍 **Flexible Targeting**: Scrape individual conditions or all conditions
 - 🗺️ **Sitemap Discovery**: Automatically discovers available conditions from Medical sitemap
 - ⚡ **Rate Limiting**: Configurable delays to respect server resources (default: 1.0s)
-- 🛡️ **Error Handling**: Robust error handling, validation, and retry logic
+- 🛡️ **Error Handling**: Request timeouts, slug validation, and an end-of-run list of failed pages (no automatic retry; see [Failures and Re-runs](#failures-and-re-runs))
 - 🚫 **Duplicate Prevention**: Checks database for existing conditions before scraping
 - 🏗️ **Modular Design**: Clean separation of concerns with organized code structure
 - 🐳 **Docker Integration**: Containerized with non-root user for security
@@ -127,7 +127,7 @@ docker compose run --rm scraper python main.py --condition acne --database
 Data is stored in the `raw_data` table with the following structure:
 - **id**: UUID primary key
 - **content**: JSONB containing the scraped data
-- **source**: Condition slug (e.g., "acne", "acid-reflux-gerd")
+- **source**: `medical_conditions:<slug>` (e.g., "medical_conditions:acne")
 - **created_at**: Timestamp
 
 ### JSON File Structure
@@ -138,7 +138,6 @@ When using `--output-dir`, files are saved as `{condition-slug}.json`:
 {
   "title": "Condition Name",
   "url": "https://patients.amwell.com/conditions/condition-slug",
-  "introduction": "Brief description...",
   "symptoms": {
     "heading": "Symptoms heading",
     "list": ["symptom1", "symptom2"]
@@ -146,14 +145,36 @@ When using `--output-dir`, files are saved as `{condition-slug}.json`:
   "onlineDiagnosingAndTreating": {
     "heading": "Treatment heading",
     "content": [
-      {"type": "p", "text": "paragraph text"},
-      {"type": "ul", "items": ["list item 1", "list item 2"]}
+      {"type": "paragraph", "text": "paragraph text"},
+      {"type": "strong_paragraph", "text": "bold lead-in text"},
+      {"type": "ul", "items": [{"text": "item"}, {"text": "item", "subitems": [{"text": "sub-item"}]}]}
     ]
   },
-  "sections": [...],
-  "faqs": [...]
+  "sections": [{"heading": "Section heading", "content": "paragraph text"}]
 }
 ```
+
+Records written before 2026-11 also carry `introduction` and `faqs`. Those fields were
+always empty, because the condition page template has no intro or FAQ block, so the
+scraper no longer emits them. The worker never read them.
+
+### Raw Means Raw
+
+Text is stored exactly as it appears on the page. That includes non-breaking spaces
+(`&nbsp;` / `U+00A0`), which the site uses heavily in headings and paragraphs. This is
+on purpose: `raw_data` stays a faithful copy of the source, and the worker normalizes
+whitespace when it builds `processed_data`. Don't clean text up in the scraper.
+
+### Failures and Re-runs
+
+There is **no automatic retry**. A page that fails (network error, non-200, save
+error) is logged and skipped. `--all` ends with a list of the failed slugs and exits
+with status 1 if there are any.
+
+- **Database mode**: just re-run `--all --database`. Conditions already in `raw_data`
+  are skipped, so only the missing ones are fetched.
+- **JSON mode**: existing files are not skipped. Retry each failure with
+  `--condition <slug>`, or re-run `--all`, which rewrites every file.
 
 ## Architecture
 
