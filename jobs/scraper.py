@@ -71,7 +71,8 @@ def scrape_condition(slug, output_dir="scraped", use_database=False, db_persiste
     symptoms = {}
     symptoms_card = soup.find("div", class_="contact-us-card")
     if symptoms_card:
-        heading = symptoms_card.find("h3", class_="contact-us-card__heading")
+        # h3 in the original template, h2 since the 2026 redesign
+        heading = symptoms_card.find(["h2", "h3"], class_="contact-us-card__heading")
         heading_text = heading.get_text(strip=True) if heading else ""
         ul = symptoms_card.find("ul")
         if ul:
@@ -83,7 +84,9 @@ def scrape_condition(slug, output_dir="scraped", use_database=False, db_persiste
 
     # Extract content from "Diagnosing and Treating Online"
     online_diagnosing_treating = {}
-    rtf_section = soup.find("section", class_="rtf")
+    # A <section class="rtf"> in the original template; since the 2026 redesign
+    # it is the page-body <div class="rtf rtf--with-margin"> (its <h2> is optional).
+    rtf_section = soup.select_one("section.rtf, .rtf.rtf--with-margin")
     if rtf_section:
         heading = rtf_section.find("h2")
         heading_text = heading.get_text(strip=True) if heading else ""
@@ -164,8 +167,8 @@ def scrape_condition(slug, output_dir="scraped", use_database=False, db_persiste
         if section.find("div", class_="contact-us-card"):
             continue
 
-        # Skip the RTF section (already processed)
-        if section.get("class") and "rtf" in section.get("class"):
+        # Skip the section holding the RTF block (already processed)
+        if rtf_section and (section is rtf_section or section in rtf_section.parents):
             continue
 
         # Capture paragraphs
