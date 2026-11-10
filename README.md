@@ -1,274 +1,75 @@
-# Medical Conditions Scraper
+# Medical Chatbot · Scraper
 
-A lightweight web scraping tool to collect medical condition data from the Medical website.
+**Station 1 of 5** in a data pipeline that turns public health-condition pages into the knowledge behind a chatbot.
 
-## Purpose
+▶ **See it explained, with a 3D walkthrough and the real data:** [medicalchatbot.demos.davieldev.com/scraper](https://medicalchatbot.demos.davieldev.com/scraper)
 
-This module is responsible for the **data collection** phase of the ETL pipeline, extracting structured medical condition information from Medical's patient portal.
-
-## Project Structure
-
-```
-medical_conditions_scraper/
-├── main.py                       # Main CLI interface and entry point
-├── jobs/                         # Scraping jobs package
-│   ├── __init__.py              # Jobs package initialization
-│   ├── parser.py                # HTML parsing utilities
-│   ├── scraper.py               # Core scraping functionality
-│   └── persistence.py           # Database persistence layer (uses shared DB)
-├── Dockerfile                   # Container configuration
-├── requirements.txt             # Python dependencies
-├── scraped/                     # Default output directory for JSON files
-└── README.md                    # This file
-
-# Shared database configuration (mounted from medical_conditions_db)
-/app/database/                   # Volume-mounted shared database module
-├── database.py                  # Database connection and configuration
-└── models.py                    # SQLAlchemy models (RawData, Document, etc.)
+```mermaid
+flowchart LR
+    site([patients.amwell.com]) --> scraper[1 · Scraper] --> worker[2 · Worker] --> db[(3 · Database)] --> api[4 · RAG API] --> web[5 · Web app]
+    style scraper fill:#3987e5,stroke:#3987e5,color:#fff
 ```
 
-## Features
+It reads the site's map, visits each condition page in turn, keeps what the chatbot needs (the condition's name, its symptoms, how it is diagnosed and treated) and saves every page as one JSON record in the shared database, exactly as found.
 
-- 🌐 **Web Scraping**: Extracts condition data from Medical website via requests + BeautifulSoup
-- 📄 **Dual Storage**: Save to JSON files OR PostgreSQL database (RawData table)
-- 🔍 **Flexible Targeting**: Scrape individual conditions or all conditions
-- 🗺️ **Sitemap Discovery**: Automatically discovers available conditions from Medical sitemap
-- ⚡ **Rate Limiting**: Configurable delays to respect server resources (default: 1.0s)
-- 🛡️ **Error Handling**: Request timeouts, slug validation, and an end-of-run list of failed pages (no automatic retry; see [Failures and Re-runs](#failures-and-re-runs))
-- 🚫 **Duplicate Prevention**: Checks database for existing conditions before scraping
-- 🏗️ **Modular Design**: Clean separation of concerns with organized code structure
-- 🐳 **Docker Integration**: Containerized with non-root user for security
-- 🗃️ **Database Integration**: Direct persistence to PostgreSQL with shared RawData model
-- 🔄 **Service Dependencies**: Waits for postgres health check and db migrations to complete
-
-## Installation
-
-### Local Development
-```bash
-# Install scraper dependencies
-pip install -r requirements.txt
-
-# Run with database (requires DATABASE_URL environment variable)
-export DATABASE_URL="postgresql://postgres:password@localhost:5434/medical_conditions_db"
-python main.py --list-conditions
-python main.py --condition acne --database
-```
-
-### Docker (Recommended)
-```bash
-# Build the scraper container
-docker compose build scraper
-
-# Run scraper with database
-docker compose run --rm scraper python main.py --all --database
-```
-
-## Usage
-
-### Command Line Interface
-
-#### List Available Conditions
-```bash
-python main.py --list-conditions
-```
-
-Queries the Medical sitemap to discover all available medical conditions.
-
-#### Scrape All Conditions to Database (Recommended)
-```bash
-python main.py --all --database
-```
-
-Scrapes all conditions and stores them in PostgreSQL `raw_data` table.
-
-#### Scrape All Conditions to JSON Files
-```bash
-python main.py --all
-```
-
-Scrapes all conditions and saves as JSON files in the `scraped/` directory.
-
-#### Scrape Specific Condition
-```bash
-# Store in database
-python main.py --condition acne --database
-python main.py --condition acid-reflux-gerd --database
-
-# Save as JSON file
-python main.py --condition acne --output-dir custom_output/
-```
-
-#### Rate Limiting
-```bash
-python main.py --all --delay 2.0 --database  # 2 second delay between requests
-```
-
-### Docker Integration
-
-The scraper runs automatically as part of the Docker Compose stack:
+## Quick start
 
 ```bash
-# Run full stack (postgres → db migrations → scraper)
-docker compose up
-
-# Run scraper only with database
-docker compose up postgres db scraper
-
-# Run scraper with custom command
-docker compose run --rm scraper python main.py --condition acne --database
+make install
+make test                          # parser tests, offline
+make run                           # every page → raw_data (start the API's Postgres first: make db-up there)
+make run ARGS='--condition acne'   # one page
+make run JSON=1                    # JSON files in ./scraped instead of the database
 ```
 
-**Default Docker Behavior**: The scraper service is commented out in `docker-compose.yml` by default to prevent automatic scraping on every `docker compose up`. Uncomment the command line to enable automatic scraping.
+Without make: `uv run python main.py --help`.
 
-## Output Structure
+| Option | What it does |
+| --- | --- |
+| `--all` | Every condition page (the default) |
+| `--condition SLUG` | One page, for example `acne` or `acid-reflux-gerd` |
+| `--list-conditions` | The pages the sitemap lists |
+| `--database` | Save to the `raw_data` table (needs `DATABASE_URL`); without it, JSON files |
+| `--output-dir DIR` | Folder for the JSON files (default `scraped/`) |
+| `--delay SECONDS` | Pause between two pages (default `1.0`) |
 
-### Database Storage (Recommended)
+## From the walkthrough to the code
 
-Data is stored in the `raw_data` table with the following structure:
-- **id**: UUID primary key
-- **content**: JSONB containing the scraped data
-- **source**: `medical_conditions:<slug>` (e.g., "medical_conditions:acne")
-- **created_at**: Timestamp
+Each step on the [scraper page](https://medicalchatbot.demos.davieldev.com/scraper) is one function:
 
-### JSON File Structure
+| Step | Code |
+| --- | --- |
+| 1 · Find every page | `discover_condition_slugs()` in [`jobs/scraper.py`](jobs/scraper.py) reads `sitemap.xml`, or the `/conditions/` index if the sitemap is down |
+| 2 · Visit one at a time | `scrape()` in [`jobs/scraper.py`](jobs/scraper.py): one keep-alive connection, retries, a pause between pages |
+| 3 · Pick out what matters | `parse_condition_page()` in [`jobs/parser.py`](jobs/parser.py), field by field in the [HTML → JSON](https://medicalchatbot.demos.davieldev.com/scraper#mapping) table |
+| 4 · Save the record | `DatabaseStore` / `JsonFileStore` in [`jobs/persistence.py`](jobs/persistence.py); see a stored [raw record](https://medicalchatbot.demos.davieldev.com/scraper#record) |
 
-When using `--output-dir`, files are saved as `{condition-slug}.json`:
+[`main.py`](main.py) is the command line. [`db/`](db/) holds the connection and the `raw_data` model, a mirror of the schema the [API](https://github.com/davidsanbric-dev/MedicalChatbotAPI) owns. [`html_structure/`](html_structure/) keeps trimmed snippets of the original page template for reference.
 
-```json
-{
-  "title": "Condition Name",
-  "url": "https://patients.amwell.com/conditions/condition-slug",
-  "symptoms": {
-    "heading": "Symptoms heading",
-    "list": ["symptom1", "symptom2"]
-  },
-  "onlineDiagnosingAndTreating": {
-    "heading": "Treatment heading",
-    "content": [
-      {"type": "paragraph", "text": "paragraph text"},
-      {"type": "strong_paragraph", "text": "bold lead-in text"},
-      {"type": "ul", "items": [{"text": "item"}, {"text": "item", "subitems": [{"text": "sub-item"}]}]}
-    ]
-  },
-  "sections": [{"heading": "Section heading", "content": "paragraph text"}]
-}
+## Good to know
+
+- **Raw means raw.** Text is stored exactly as on the page, non-breaking spaces included. The worker normalizes it, so `raw_data` stays a faithful copy of the source.
+- **Retries, then re-runs.** Network errors and `429`/`5xx` answers are retried 3 times with exponential backoff, honoring `Retry-After`. Pages that still fail are listed at the end, and the run exits with status 1.
+- **Re-runs fill gaps.** With `--database`, pages already in `raw_data` (`source = medical_conditions:<slug>`) are skipped. JSON files are always rewritten.
+- **Two page templates.** The parser reads both the original layout and the site's 2026 redesign; [`tests/test_parser.py`](tests/test_parser.py) covers both.
+
+## Docker
+
+```bash
+make docker-build
+make docker-run ARGS='--condition acne'
 ```
 
-Records written before 2026-11 also carry `introduction` and `faqs`. Those fields were
-always empty, because the condition page template has no intro or FAQ block, so the
-scraper no longer emits them. The worker never read them.
+The container reaches the API stack's Postgres through `host.docker.internal` (see [`.env.example`](.env.example)).
 
-### Raw Means Raw
+## The whole pipeline
 
-Text is stored exactly as it appears on the page. That includes non-breaking spaces
-(`&nbsp;` / `U+00A0`), which the site uses heavily in headings and paragraphs. This is
-on purpose: `raw_data` stays a faithful copy of the source, and the worker normalizes
-whitespace when it builds `processed_data`. Don't clean text up in the scraper.
+| Station | Repository | Walkthrough |
+| --- | --- | --- |
+| 1 · Scraper | **MedicalChatbotScraper** (this one) | [/scraper](https://medicalchatbot.demos.davieldev.com/scraper) |
+| 2 · Worker | [MedicalChatbotWorker](https://github.com/davidsanbric-dev/MedicalChatbotWorker) | [/worker](https://medicalchatbot.demos.davieldev.com/worker) |
+| 3 · Database | [MedicalChatbotAPI](https://github.com/davidsanbric-dev/MedicalChatbotAPI) | [/database](https://medicalchatbot.demos.davieldev.com/database) |
+| 4 · RAG API | [MedicalChatbotAPI](https://github.com/davidsanbric-dev/MedicalChatbotAPI) | [/api](https://medicalchatbot.demos.davieldev.com/api) |
+| 5 · Web app | [MedicalChatbotWeb](https://github.com/davidsanbric-dev/MedicalChatbotWeb) | [/interface](https://medicalchatbot.demos.davieldev.com/interface) · [chat](https://medicalchatbot.demos.davieldev.com/chat) |
 
-### Failures and Re-runs
-
-There is **no automatic retry**. A page that fails (network error, non-200, save
-error) is logged and skipped. `--all` ends with a list of the failed slugs and exits
-with status 1 if there are any.
-
-- **Database mode**: just re-run `--all --database`. Conditions already in `raw_data`
-  are skipped, so only the missing ones are fetched.
-- **JSON mode**: existing files are not skipped. Retry each failure with
-  `--condition <slug>`, or re-run `--all`, which rewrites every file.
-
-## Architecture
-
-This scraper features a clean, modular architecture with shared database configuration:
-
-- **`main.py`**: Command-line interface and argument parsing
-- **`jobs/scraper.py`**: Core scraping logic and web requests
-- **`jobs/parser.py`**: HTML parsing and data extraction utilities
-- **`jobs/persistence.py`**: Database operations using shared DB models
-
-### 🔄 Shared Database Configuration
-
-The scraper uses the **same database configuration** as the main application:
-- **Volume mount**: `./medical_conditions_db:/app/database` contains shared `database.py` and `models.py`
-- **Single source of truth**: No duplicate database configurations
-- **Consistent models**: Uses the exact same `RawData` model as the main DB service
-- **Import path**: Adds `/app/database` to `sys.path` for shared module access
-
-The scraper is **intentionally separated** from the main API to:
-
-- ✅ Keep API dependencies minimal and lightweight
-- ✅ Allow independent deployment and scaling
-- ✅ Enable scheduled data collection jobs without affecting the API
-- ✅ Provide clear separation of concerns (ETL collection vs data processing vs serving)
-- ✅ Share database configuration across services without code duplication
-- ✅ Run as a one-off job or scheduled task
-
-## Programmatic Usage
-
-You can also import and use the scraper programmatically:
-
-```python
-from jobs.scraper import scrape_condition, scrape_all_conditions, list_available_conditions
-from jobs.parser import extract_nested_list
-
-# Get list of available conditions from Medical sitemap
-conditions = list_available_conditions()
-print(f"Found {len(conditions)} conditions")
-
-# Scrape a specific condition to database
-# Basic usage (the function will create/disconnect its own DB connection):
-data = scrape_condition("acne", use_database=True)
-
-# Advanced: reuse a DatabasePersistence instance across multiple calls to avoid
-# reconnecting/disconnecting for each condition (recommended when scraping many):
-# db = DatabasePersistence()
-# if db.connect():
-#     data = scrape_condition("acne", use_database=True, db_persistence=db)
-
-# Scrape a specific condition to JSON file
-data = scrape_condition("acne", output_dir="my_output", use_database=False)
-
-# Scrape all conditions with custom delay
-scrape_all_conditions(output_dir="output", delay=2.0, use_database=True)
-```
-
-## Dependencies
-
-- **requests** (>=2.31.0): HTTP client for web requests
-- **beautifulsoup4** (>=4.12.0): HTML parsing and extraction
-- **lxml** (>=4.9.3): Fast XML/HTML parsing backend
-- **sqlalchemy** (>=2.0.0): Database ORM
-- **psycopg2-binary** (>=2.9.0): PostgreSQL adapter
-- **alembic** (>=1.12.0): Database migrations
-- **pgvector** (>=0.2.0): Vector similarity search support
-
-## Best Practices
-
-1. **Use Database Storage**: Prefer `--database` flag for production use
-2. **Check for Duplicates**: Scraper automatically skips existing conditions in database
-3. **Respect robots.txt**: Always check site's robots.txt policy before scraping
-4. **Rate limiting**: Use appropriate delays between requests (default: 1.0s, recommended: 2.0s+)
-5. **Error handling**: Monitor logs for 404 errors and validation failures
-6. **Data validation**: Validate condition slugs with `--list-conditions` before scraping
-7. **Service Dependencies**: Ensure postgres is healthy and migrations are complete before scraping
-
-## Integration
-
-This scraper is the **first stage** of the 3-stage ETL pipeline:
-
-```
-Stage 1: Scraper → RawData (PostgreSQL)
-Stage 2: Worker → ProcessedData (PostgreSQL) 
-Stage 3: Worker → Documents with Embeddings (PostgreSQL + pgvector)
-```
-
-### Data Flow:
-1. **Scraper** collects raw HTML and stores in `raw_data` table
-2. **Worker** processes raw data and stores structured content in `processed_data` table
-3. **Worker** generates embeddings and stores chunks in `documents` table
-4. **API** serves processed data via RAG-powered chat interface
-5. **Frontend** provides user-facing Streamlit interface
-
-### Docker Compose Dependency Chain:
-```
-postgres (healthy) → db (migrations) → scraper → worker → api → frontend
-```
+Educational demo: the content comes from a public telehealth site and is not medical advice.

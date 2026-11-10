@@ -1,109 +1,57 @@
-"""Database persistence functionality for scraped data."""
+"""Save each parsed page: as a raw_data row (--database) or as a JSON file.
 
-from typing import Dict, Any, Optional
+Step 4, "Save the record", on https://medicalchatbot.demos.davieldev.com/scraper#record
+"""
 
-from db.database import SessionLocal
+import json
+from pathlib import Path
+from typing import Protocol
+
+from sqlalchemy import select
+
+from db.database import open_session
 from db.models import RawData
 
+SOURCE_PREFIX = "medical_conditions:"  # raw_data.source = "medical_conditions:<slug>"
 
-class DatabasePersistence:
-    """Handles persistence of scraped data to PostgreSQL database."""
 
-    def __init__(self):
-        """Initialize database persistence."""
-        self.session = None
+class PageStore(Protocol):
+    def saved_slugs(self) -> set[str]:
+        """Pages a previous run already saved, which this run skips."""
+        ...
 
-    def connect(self):
-        """Establish database connection."""
-        try:
-            self.session = SessionLocal()
-            print("✅ Connected to database")
-            return True
-        except Exception as e:
-            print(f"❌ Failed to connect to database: {e}")
-            return False
-    
-    def disconnect(self):
-        """Close database connection."""
-        if self.session:
-            self.session.close()
-            self.session = None
-            print("🔌 Disconnected from database")
-    
-    def save_condition_data(self, slug: str, data: Dict[str, Any]) -> Optional[str]:
-        """
-        Save scraped condition data to the database.
-        
-        Args:
-            slug: The condition slug (e.g., 'acne', 'diabetes')
-            data: The scraped condition data
-            
-        Returns:
-            The UUID of the saved record, or None if failed
-        """
-        if not self.session:
-            print("❌ No database connection")
-            return None
-        
-        try:
-            # Create RawData record
-            raw_data = RawData(
-                content=data,
-                source=f"medical_conditions:{slug}"
-            )
-            
-            self.session.add(raw_data)
-            self.session.commit()
-            
-            print(f"✅ Saved condition '{slug}' to database (ID: {raw_data.id})")
-            return str(raw_data.id)
-            
-        except Exception as e:
-            print(f"❌ Failed to save condition '{slug}' to database: {e}")
-            self.session.rollback()
-            return None
-    
-    def check_existing_condition(self, slug: str) -> bool:
-        """
-        Check if a condition already exists in the database.
-        
-        Args:
-            slug: The condition slug to check
-            
-        Returns:
-            True if the condition exists, False otherwise
-        """
-        if not self.session:
-            return False
-        
-        try:
-            existing = self.session.query(RawData).filter(
-                RawData.source == f"medical_conditions:{slug}"
-            ).first()
-            
-            return existing is not None
-            
-        except Exception as e:
-            print(f"⚠️ Error checking existing condition '{slug}': {e}")
-            return False
-    
-    def get_condition_count(self) -> int:
-        """
-        Get the total number of conditions stored in the database.
-        
-        Returns:
-            Number of stored conditions
-        """
-        if not self.session:
-            return 0
-        
-        try:
-            count = self.session.query(RawData).filter(
-                RawData.source.like("medical_conditions:%")
-            ).count()
-            
-            return count
-            
-        except Exception as e:
-            print(f"⚠️ Error getting condition count: {e}")
-            return 0
+    def save(self, slug: str, page: dict) -> str:
+        """Save one page and say where it went."""
+        ...
+
+
+class DatabaseStore:
+    """One raw_data row per page. Saved pages are skipped, so a re-run only fills the gaps."""
+
+    def saved_slugs(self) -> set[str]:
+        with open_session() as session:
+            sources = session.scalars(select(RawData.source).where(RawData.source.startswith(SOURCE_PREFIX)))
+            return {source.removeprefix(SOURCE_PREFIX) for source in sources}
+
+    def save(self, slug: str, page: dict) -> str:
+        with open_session() as session, session.begin():
+            row = RawData(content=page, source=f"{SOURCE_PREFIX}{slug}")
+            session.add(row)
+            session.flush()  # assigns row.id
+            return f"raw_data (id {row.id})"
+
+
+class JsonFileStore:
+    """One <slug>.json file per page. Existing files are rewritten, not skipped."""
+
+    def __init__(self, directory: Path):
+        self.directory = directory
+
+    def saved_slugs(self) -> set[str]:
+        return set()
+
+    def save(self, slug: str, page: dict) -> str:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path = self.directory / f"{slug}.json"
+        path.write_text(json.dumps(page, indent=2, ensure_ascii=False), encoding="utf-8")
+        return str(path)

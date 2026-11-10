@@ -1,118 +1,83 @@
-"""
-Medical Medical Conditions Scraper
+"""Scraper CLI: station 1 of the medical chatbot pipeline.
 
-A command-line tool for scraping medical condition data from the Medical website.
-This refactored version organizes the scraper into a modular package structure.
+Collects every condition page of patients.amwell.com into the shared
+database (or into JSON files). How it works, visually:
+https://medicalchatbot.demos.davieldev.com/scraper
 """
 
 import argparse
-import sys
+import os
 import re
+import sys
 from pathlib import Path
 
-from jobs.scraper import (
-    scrape_condition,
-    scrape_all_conditions,
-    validate_condition_slug,
-    list_available_conditions
-)
+import requests
+from sqlalchemy.exc import SQLAlchemyError
 
-def main():
-    """Main function to handle command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Scrape medical conditions data from Medical website"
-    )
-    
-    parser.add_argument(
-        "--condition",
-        type=str,
-        help="Scrape specific condition by slug (e.g., 'allergies', 'acid-reflux-gerd', 'ear-pain')"
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Scrape all available conditions (default behavior)"
-    )
-    parser.add_argument(
-        "--list-conditions",
-        action="store_true",
-        help="List all available conditions that can be scraped"
-    )
-    
-    # Output options
-    parser.add_argument(
-        "--output-dir", "-o",
-        type=Path,
-        default=Path("scraped"),
-        help="Output directory for scraped JSON files (default: scraped)"
-    )
-    
-    # Persistence options
-    parser.add_argument(
-        "--database",
-        action="store_true",
-        help="Store data in PostgreSQL database instead of JSON files"
-    )
-    
-    # Scraping options
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=1.0,
-        help="Delay between requests in seconds (default: 1.0)"
-    )
-    
+from jobs.persistence import DatabaseStore, JsonFileStore
+from jobs.scraper import discover_condition_slugs, open_http_session, scrape
+
+SLUG = re.compile(r"[a-z0-9_-]+")
+
+
+def condition_slug(value: str) -> str:
+    """argparse type for a page slug such as 'acne' or 'acid-reflux-gerd'."""
+    slug = value.strip().lower()
+    if not SLUG.fullmatch(slug):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a slug (letters, digits, '-' and '_' only)")
+    return slug
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Scrape the condition pages of patients.amwell.com.")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--all", action="store_true", help="scrape every condition page (the default)")
+    target.add_argument("--condition", type=condition_slug, metavar="SLUG", help="scrape one page, e.g. acne")
+    target.add_argument("--list-conditions", action="store_true", help="list the pages that can be scraped")
+    parser.add_argument("--database", action="store_true", help="save to the raw_data table instead of JSON files")
+    parser.add_argument("--output-dir", "-o", type=Path, default=Path("scraped"), help="JSON folder (default: scraped)")
+    parser.add_argument("--delay", type=float, default=1.0, help="seconds between two pages (default: 1.0)")
     args = parser.parse_args()
-    
-    # Handle list conditions request
-    if args.list_conditions:
-        conditions = list_available_conditions()
-        if conditions:
-            print("\n📋 Available conditions:")
-            for condition in sorted(conditions):
-                print(f"  - {condition}")
-        return
-    
-    # Ensure output directory exists (only if not using database)
-    if not args.database:
-        args.output_dir.mkdir(parents=True, exist_ok=True)
-    output_dir = str(args.output_dir)
-    
-    if args.condition:
-        # Validate and clean the condition slug
-        condition_slug = args.condition.strip().lower()
-        
-        # Basic validation - ensure it's not empty and contains valid characters
-        if not condition_slug:
-            print("❌ Error: Condition slug cannot be empty")
-            sys.exit(1)
-        
-        # Check for invalid characters (only allow alphanumeric, hyphens, and underscores)
-        if not re.match(r'^[a-zA-Z0-9_-]+$', condition_slug):
-            print(f"❌ Error: Invalid condition slug '{condition_slug}'. Only alphanumeric characters, hyphens, and underscores are allowed.")
-            print("💡 Tip: Use --list-conditions to see available condition names")
-            sys.exit(1)
-        
-        # Validate that the condition exists
-        if not validate_condition_slug(condition_slug):
-            print(f"❌ Condition '{condition_slug}' is not available for scraping")
-            sys.exit(1)
-        
-        print(f"🔎 Scraping condition: {condition_slug}")
-        result = scrape_condition(condition_slug, output_dir, args.database)
-        if result:
-            print(f"✅ Successfully scraped condition: {condition_slug}")
-        else:
-            print(f"❌ Failed to scrape condition: {condition_slug}")
-            print("💡 Tip: Use --list-conditions to verify the condition name is correct")
-            sys.exit(1)
+    if args.database and not os.getenv("DATABASE_URL"):
+        parser.error("--database needs the DATABASE_URL environment variable")
+    return args
+
+
+def main() -> int:
+    args = parse_args()
+    with open_http_session() as http:
+        try:
+            slugs = sorted(discover_condition_slugs(http))
+        except requests.RequestException as error:
+            print(f"❌ Could not list the condition pages: {error}")
+            return 1
+
+        if args.list_conditions:
+            print(f"📋 {len(slugs)} condition pages:", *(f"  - {slug}" for slug in slugs), sep="\n")
+            return 0
+        if args.condition:
+            if args.condition not in slugs:
+                print(f"❌ There is no condition page called '{args.condition}'. See --list-conditions.")
+                return 1
+            slugs = [args.condition]
+
+        store = DatabaseStore() if args.database else JsonFileStore(args.output_dir)
+        try:
+            failed = scrape(http, slugs, store, args.delay)
+        except SQLAlchemyError as error:
+            print(f"❌ Database unavailable ({type(error).__name__}): check DATABASE_URL")
+            return 1
+
+    if not failed:
+        print("✅ Done: every page is saved")
+        return 0
+    print(f"⚠️ {len(failed)} of {len(slugs)} pages failed: {', '.join(failed)}")
+    if args.database:
+        print("💡 Re-run to fill the gaps: pages already in the database are skipped")
     else:
-        # --all, or no target at all (default behavior)
-        print("🔎 Scraping all conditions...")
-        failed = scrape_all_conditions(output_dir, args.delay, args.database)
-        if failed is None or failed:
-            sys.exit(1)
+        print("💡 Re-run, or retry one page with --condition <slug>")
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

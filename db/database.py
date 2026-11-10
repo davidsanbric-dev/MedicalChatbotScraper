@@ -1,31 +1,20 @@
+"""Connection to the shared pipeline database, used only with --database.
+
+The engine is created on first use, so writing JSON files needs no DATABASE_URL.
+"""
+
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import QueuePool
+from functools import cache
 
-# Database URL configuration
-DATABASE_URL = os.getenv("DATABASE_URL")
+from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session
 
-# Create engine with connection pooling
-engine = create_engine(
-    DATABASE_URL,
-    poolclass=QueuePool,
-    pool_size=10,
-    max_overflow=20,
-    echo=False  # Set to True for SQL debugging
-)
 
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+@cache
+def _engine() -> Engine:
+    return create_engine(os.environ["DATABASE_URL"])
 
-# Create declarative base
-Base = declarative_base()
 
-def get_db():
-    """Dependency to get database session"""
-    db = SessionLocal()
-    try:
-        yield db # Use yield to allow for cleanup in order to work with FastAPI dependencies
-    finally:
-        db.close()
+def open_session() -> Session:
+    """A new session; use it as `with open_session() as session:`."""
+    return Session(_engine())
